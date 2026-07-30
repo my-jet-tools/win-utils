@@ -1,0 +1,28 @@
+# Build + tests on the platform of truth. The crate compiles on Linux/mac too (the
+# Windows-only parts have stubs), but only a Windows runner compiles the real SCM /
+# service-control code — and until a consumer builds, nothing else does. A library
+# whose Windows half is never compiled in its own CI is a library that breaks its
+# consumers instead of itself.
+name: Test win-utils
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: ["main"]
+
+jobs:
+  test:
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1.15.2
+        with:
+          toolchain: stable
+
+      - name: Test (x86_64-pc-windows-msvc)
+        run: cargo test --workspace --target x86_64-pc-windows-msvc
