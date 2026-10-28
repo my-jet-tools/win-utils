@@ -15,6 +15,22 @@ use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 
 use crate::{InstallSpec, ShutdownFn, StartFn};
 
+/// The exit code of a service whose body failed - in practice, whose `StartFn` returned an
+/// error. Not `NO_ERROR`: a service which stops with it has stopped cleanly as far as the SCM
+/// knows, so nothing records the failure and no failure action runs.
+const BODY_FAILED: ServiceExitCode = ServiceExitCode::ServiceSpecific(1);
+
+/// A windows-service error with what the Win32 call said. The crate's own text for a failed call
+/// is "IO error in winapi call" and nothing more, so "no such service" (1060), "it exists
+/// already" (1073) and "access denied" (5) read the same; the io::Error inside carries the
+/// system message and the code - "... (os error 1060)".
+fn describe(error: windows_service::Error) -> String {
+    match error {
+        windows_service::Error::Winapi(io) => io.to_string(),
+        other => other.to_string(),
+    }
+}
+
 pub fn install(spec: InstallSpec<'_>) -> Result<(), String> {
     let exe = std::env::current_exe()
         .map_err(|e| format!("can not determine the path of this exe: {e}"))?;
@@ -40,7 +56,12 @@ pub fn install(spec: InstallSpec<'_>) -> Result<(), String> {
         None::<&str>,
         ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE,
     )
-    .map_err(|e| format!("can not open the Service Control Manager (run elevated?): {e}"))?;
+    .map_err(|e| {
+        format!(
+            "can not open the Service Control Manager (run elevated?): {}",
+            describe(e)
+        )
+    })?;
 
     let info = ServiceInfo {
         name: OsString::from(spec.name),
@@ -60,14 +81,19 @@ pub fn install(spec: InstallSpec<'_>) -> Result<(), String> {
             &info,
             ServiceAccess::CHANGE_CONFIG | ServiceAccess::START | ServiceAccess::QUERY_STATUS,
         )
-        .map_err(|e| format!("can not create service '{}': {e}", spec.name))?;
+        .map_err(|e| format!("can not create service '{}': {}", spec.name, describe(e)))?;
 
-    service
-        .set_description(spec.description)
-        .map_err(|e| format!("service created, but setting the description failed: {e}"))?;
+    service.set_description(spec.description).map_err(|e| {
+        format!(
+            "service created, but setting the description failed: {}",
+            describe(e)
+        )
+    })?;
 
-    // Three restarts 10s apart; the attempt counter forgets old failures
-    // after a day.
+    // A restart 10s after every failure, with no limit: the SCM repeats the
+    // last action of the list for every failure past its end, so the three
+    // entries are not three attempts. The reset period only sets back the
+    // count the event log reports ("It has done this N time(s)").
     service
         .update_failure_actions(ServiceFailureActions {
             reset_period: ServiceFailureResetPeriod::After(Duration::from_secs(86_400)),
@@ -81,13 +107,24 @@ pub fn install(spec: InstallSpec<'_>) -> Result<(), String> {
                 3
             ]),
         })
-        .map_err(|e| format!("service created, but setting restart-on-failure failed: {e}"))?;
+        .map_err(|e| {
+            format!(
+                "service created, but setting restart-on-failure failed: {}",
+                describe(e)
+            )
+        })?;
 
-    // Also restart when the process exits non-zero on its own (not only when
-    // it dies without reporting SERVICE_STOPPED).
+    // Also restart when the service stops with an error on its own - a body
+    // which failed, see `BODY_FAILED` - not only when it dies without
+    // reporting SERVICE_STOPPED.
     service
         .set_failure_actions_on_non_crash_failures(true)
-        .map_err(|e| format!("service created, but enabling non-crash recovery failed: {e}"))?;
+        .map_err(|e| {
+            format!(
+                "service created, but enabling non-crash recovery failed: {}",
+                describe(e)
+            )
+        })?;
 
     println!(
         "Service '{}' installed (auto-start, restart-on-failure).",
@@ -107,30 +144,35 @@ pub fn install(spec: InstallSpec<'_>) -> Result<(), String> {
 /// Stops (when running) and deletes the service.
 pub fn uninstall(name: &str) -> Result<(), String> {
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
-        .map_err(|e| format!("can not open the Service Control Manager (run elevated?): {e}"))?;
+        .map_err(|e| {
+            format!(
+                "can not open the Service Control Manager (run elevated?): {}",
+                describe(e)
+            )
+        })?;
 
     let service = manager
         .open_service(
             name,
             ServiceAccess::STOP | ServiceAccess::DELETE | ServiceAccess::QUERY_STATUS,
         )
-        .map_err(|e| format!("can not open service '{name}': {e}"))?;
+        .map_err(|e| format!("can not open service '{name}': {}", describe(e)))?;
 
     let status = service
         .query_status()
-        .map_err(|e| format!("can not query service '{name}': {e}"))?;
+        .map_err(|e| format!("can not query service '{name}': {}", describe(e)))?;
 
     if status.current_state != ServiceState::Stopped {
         println!("Stopping '{name}' ...");
         service
             .stop()
-            .map_err(|e| format!("can not stop service '{name}': {e}"))?;
+            .map_err(|e| format!("can not stop service '{name}': {}", describe(e)))?;
 
         for _ in 0..60 {
             std::thread::sleep(Duration::from_millis(500));
             let status = service
                 .query_status()
-                .map_err(|e| format!("can not query service '{name}': {e}"))?;
+                .map_err(|e| format!("can not query service '{name}': {}", describe(e)))?;
             if status.current_state == ServiceState::Stopped {
                 break;
             }
@@ -139,7 +181,7 @@ pub fn uninstall(name: &str) -> Result<(), String> {
 
     service
         .delete()
-        .map_err(|e| format!("can not delete service '{name}': {e}"))?;
+        .map_err(|e| format!("can not delete service '{name}': {}", describe(e)))?;
 
     println!("Service '{name}' uninstalled.");
     Ok(())
@@ -147,13 +189,18 @@ pub fn uninstall(name: &str) -> Result<(), String> {
 
 pub fn start(name: &str) -> Result<(), String> {
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
-        .map_err(|e| format!("can not open the Service Control Manager (run elevated?): {e}"))?;
+        .map_err(|e| {
+            format!(
+                "can not open the Service Control Manager (run elevated?): {}",
+                describe(e)
+            )
+        })?;
     let service = manager
         .open_service(name, ServiceAccess::START)
-        .map_err(|e| format!("can not open service '{name}': {e}"))?;
+        .map_err(|e| format!("can not open service '{name}': {}", describe(e)))?;
     service
         .start::<&std::ffi::OsStr>(&[])
-        .map_err(|e| format!("can not start service '{name}': {e}"))?;
+        .map_err(|e| format!("can not start service '{name}': {}", describe(e)))?;
     println!("Service '{name}' started.");
     Ok(())
 }
@@ -173,7 +220,7 @@ windows_service::define_windows_service!(ffi_service_main, service_main);
 pub fn run_as_service(name: String, start: StartFn) -> Result<(), String> {
     let _ = SERVICE_RUN.set(Mutex::new(Some((name.clone(), start))));
     service_dispatcher::start(name, ffi_service_main)
-        .map_err(|e| format!("service dispatcher failed: {e}"))
+        .map_err(|e| format!("service dispatcher failed: {}", describe(e)))
 }
 
 fn service_main(_arguments: Vec<OsString>) {
@@ -202,9 +249,14 @@ fn run_service() -> Result<(), String> {
         ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
         _ => ServiceControlHandlerResult::NotImplemented,
     })
-    .map_err(|e| format!("can not register the service control handler: {e}"))?;
+    .map_err(|e| {
+        format!(
+            "can not register the service control handler: {}",
+            describe(e)
+        )
+    })?;
 
-    let set_state = |state: ServiceState, wait_hint: Duration| {
+    let set_status = |state: ServiceState, wait_hint: Duration, exit_code: ServiceExitCode| {
         let _ = status_handle.set_service_status(ServiceStatus {
             service_type: ServiceType::OWN_PROCESS,
             current_state: state,
@@ -213,17 +265,25 @@ fn run_service() -> Result<(), String> {
             } else {
                 ServiceControlAccept::empty()
             },
-            exit_code: ServiceExitCode::Win32(0),
+            exit_code,
             checkpoint: 0,
             wait_hint,
             process_id: None,
         });
     };
+    let set_state = |state: ServiceState, wait_hint: Duration| {
+        set_status(state, wait_hint, ServiceExitCode::NO_ERROR)
+    };
 
     set_state(ServiceState::StartPending, Duration::from_secs(30));
 
-    let runtime = tokio::runtime::Runtime::new()
-        .map_err(|e| format!("can not build the tokio runtime: {e}"))?;
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(runtime) => runtime,
+        Err(e) => {
+            set_status(ServiceState::Stopped, Duration::ZERO, BODY_FAILED);
+            return Err(format!("can not build the tokio runtime: {e}"));
+        }
+    };
 
     let result = runtime.block_on(async {
         let shutdown: ShutdownFn = start().await?;
@@ -252,6 +312,16 @@ fn run_service() -> Result<(), String> {
     // Give the logger a beat to flush before the process is torn down.
     runtime.shutdown_timeout(Duration::from_secs(5));
 
-    set_state(ServiceState::Stopped, Duration::ZERO);
+    // A failed body stops the service with an error, not as a clean stop: the SCM records it
+    // (event 7024, "terminated with the following service-specific error", which Windows words
+    // as the system message of code 1, "Incorrect function."), and as `install` turns on the
+    // failure actions for non-crash failures, the service is restarted 10s later as after a
+    // crash - which gets it past a start that failed on something passing, a port not yet free
+    // at boot, and retries one which fails for good every 10s.
+    let exit_code = match result {
+        Ok(()) => ServiceExitCode::NO_ERROR,
+        Err(_) => BODY_FAILED,
+    };
+    set_status(ServiceState::Stopped, Duration::ZERO, exit_code);
     Ok(())
 }

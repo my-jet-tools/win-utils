@@ -32,7 +32,7 @@ same service-hosting code. Collapsing it onto this crate is the remaining step.
 ## Using it
 
 ```toml
-win-service-host = { tag = "win-service-host-0.1.2", git = "https://github.com/my-jet-tools/win-utils.git" }
+win-service-host = { tag = "win-service-host-0.1.3", git = "https://github.com/my-jet-tools/win-utils.git" }
 ```
 
 Tags are per crate: `<crate>-<version>`, so crates here version independently.

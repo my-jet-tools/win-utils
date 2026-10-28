@@ -3,8 +3,8 @@
 //! the statistic collector do not each re-implement it.
 //!
 //! `install` registers the exe with the Service Control Manager: auto-start at
-//! boot, restart-on-failure (3 attempts, 10s apart, counter reset daily),
-//! description, and a `binPath` that re-invokes the same exe with
+//! boot, restart-on-failure (10s after every failure, for as long as it
+//! fails), description, and a `binPath` that re-invokes the same exe with
 //! `--run-as-service`. That flag matters: a service exe must speak the SCM
 //! protocol (ServiceMain + control handler) or Windows kills it with error
 //! 1053 — the whole reason wrappers like WinSW existed.

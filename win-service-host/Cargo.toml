@@ -1,6 +1,6 @@
 [package]
 name = "win-service-host"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 description = "Hosts a Rust binary as a native Windows service (install/uninstall/start/run-as-service)"
 authors = ["my-jet-tools"]
