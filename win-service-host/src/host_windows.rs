@@ -72,7 +72,9 @@ pub fn install(spec: InstallSpec<'_>) -> Result<(), String> {
         executable_path: exe,
         launch_arguments,
         dependencies: vec![],
-        account_name: None, // LocalSystem
+        // None is LocalSystem; the others are accounts of Windows itself, which have no
+        // password.
+        account_name: spec.account.account_name(spec.name).map(OsString::from),
         account_password: None,
     };
 
@@ -127,8 +129,12 @@ pub fn install(spec: InstallSpec<'_>) -> Result<(), String> {
         })?;
 
     println!(
-        "Service '{}' installed (auto-start, restart-on-failure).",
-        spec.name
+        "Service '{}' installed (auto-start, restart-on-failure), running as {}.",
+        spec.name,
+        spec.account
+            .account_name(spec.name)
+            .as_deref()
+            .unwrap_or("LocalSystem")
     );
     match settings_path {
         Some(path) => println!("Settings: {}", path.display()),

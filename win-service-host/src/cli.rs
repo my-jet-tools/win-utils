@@ -4,6 +4,7 @@
 //! <exe>                          run in the console
 //! <exe> --install                register as a Windows service
 //!       [--name <service>] [--description <text>] [--settings <file>]
+//!       [--account local-system|local-service|network-service|virtual]
 //! <exe> --start [--name <s>]     start the installed service
 //! <exe> --uninstall [--name <s>] stop and remove the service
 //! ```
@@ -32,6 +33,9 @@ pub struct CliArgs {
     pub name: String,
     pub description: Option<String>,
     pub settings: Option<String>,
+    /// `--account`: the account `--install` registers the service to run as. `None` leaves it
+    /// to the binary's default.
+    pub account: Option<crate::ServiceAccount>,
 }
 
 pub fn parse_args(bin_name: &str, default_service_name: &str) -> Result<CliArgs, String> {
@@ -39,6 +43,7 @@ pub fn parse_args(bin_name: &str, default_service_name: &str) -> Result<CliArgs,
     let mut name: Option<String> = None;
     let mut description: Option<String> = None;
     let mut settings: Option<String> = None;
+    let mut account: Option<crate::ServiceAccount> = None;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -52,6 +57,13 @@ pub fn parse_args(bin_name: &str, default_service_name: &str) -> Result<CliArgs,
                 description = Some(required_value(&mut args, "--description", bin_name)?)
             }
             "--settings" => settings = Some(required_value(&mut args, "--settings", bin_name)?),
+            "--account" => {
+                let value = required_value(&mut args, "--account", bin_name)?;
+                account = Some(
+                    crate::ServiceAccount::parse(&value)
+                        .ok_or_else(|| usage(bin_name, &format!("unknown --account '{value}'")))?,
+                );
+            }
             other => return Err(usage(bin_name, &format!("unknown argument '{other}'"))),
         }
     }
@@ -61,6 +73,7 @@ pub fn parse_args(bin_name: &str, default_service_name: &str) -> Result<CliArgs,
         name: name.unwrap_or_else(|| default_service_name.to_string()),
         description,
         settings,
+        account,
     })
 }
 
@@ -81,7 +94,9 @@ pub fn usage(bin_name: &str, problem: &str) -> String {
          {bin_name}.exe                         run in the console\n  \
          {bin_name}.exe --install               register as a Windows service\n      \
          [--name <service>] [--description <text>] [--settings <file>]\n      \
-         (auto-start at boot, restart-on-failure; settings default to settings.yaml next to the exe)\n  \
+         [--account local-system|local-service|network-service|virtual]\n      \
+         (auto-start at boot, restart-on-failure; settings default to settings.yaml next to the exe;\n      \
+         virtual is NT SERVICE\\<service>, an account of this service alone)\n  \
          {bin_name}.exe --start [--name <service>]      start the installed service\n  \
          {bin_name}.exe --uninstall [--name <service>]  stop and remove the service"
     )

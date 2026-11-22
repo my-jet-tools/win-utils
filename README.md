@@ -32,12 +32,20 @@ same service-hosting code. Collapsing it onto this crate is the remaining step.
 ## Using it
 
 ```toml
-win-service-host = { tag = "0.1.3", git = "https://github.com/my-jet-tools/win-utils.git" }
+win-service-host = { tag = "0.2.0", git = "https://github.com/my-jet-tools/win-utils.git" }
 ```
 
 Tags are plain versions while `win-service-host` is the only crate here. A second crate
 would bring back per-crate tags, `<crate>-<version>`, since two crates can not both own
-`0.1.3`; `win-service-host-0.1.2` is from that scheme.
+`0.2.0`; `win-service-host-0.1.2` is from that scheme.
+
+`InstallSpec::account` is the account the service runs as - `ServiceAccount::LocalSystem`
+(the default of the type, and what every version before 0.2.0 installed), `LocalService`,
+`NetworkService`, or `Virtual`: `NT SERVICE\<service name>`, an account Windows makes for
+that one service. `--account local-system|local-service|network-service|virtual` is parsed
+into `CliArgs::account`; a binary passes `args.account.unwrap_or(<its default>)`. A service
+which faces the network should not be LocalSystem: `Virtual` has the rights of a plain user,
+and the files it needs are granted to it by name (`icacls <folder> /grant "NT SERVICE\<name>:(OI)(CI)M"`).
 
 Each binary supplies its own service description — `InstallSpec::description` is a
 required `&str`, not an `Option`, because a shared host cannot invent a sensible

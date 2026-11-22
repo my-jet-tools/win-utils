@@ -37,8 +37,50 @@ mod host_stub;
 #[cfg(not(windows))]
 pub use host_stub::{install, run_as_service, start, uninstall};
 
+/// The account the installed service runs as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ServiceAccount {
+    /// `LocalSystem`: everything on the machine is open to it. The default, as it always was.
+    #[default]
+    LocalSystem,
+    /// `NT AUTHORITY\LocalService`: the rights of a plain user, and nobody on the network.
+    LocalService,
+    /// `NT AUTHORITY\NetworkService`: the rights of a plain user, the machine on the network.
+    NetworkService,
+    /// `NT SERVICE\<service name>`: an account of this one service, made by Windows with the
+    /// service and gone with it. The rights of a plain user, and files can be granted to it
+    /// alone - which is what makes it the account for a service facing the network.
+    Virtual,
+}
+
+impl ServiceAccount {
+    /// The value of `--account`.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "local-system" => Some(Self::LocalSystem),
+            "local-service" => Some(Self::LocalService),
+            "network-service" => Some(Self::NetworkService),
+            "virtual" => Some(Self::Virtual),
+            _ => None,
+        }
+    }
+
+    /// The account name the SCM takes for the service `service_name`; `None` is LocalSystem.
+    pub fn account_name(&self, service_name: &str) -> Option<String> {
+        match self {
+            Self::LocalSystem => None,
+            Self::LocalService => Some(r"NT AUTHORITY\LocalService".to_string()),
+            Self::NetworkService => Some(r"NT AUTHORITY\NetworkService".to_string()),
+            Self::Virtual => Some(format!(r"NT SERVICE\{service_name}")),
+        }
+    }
+}
+
 /// Everything `install` needs to know about the service being registered.
 pub struct InstallSpec<'a> {
+    /// The account the service runs as. Each binary decides its default, and lets `--account`
+    /// override it.
+    pub account: ServiceAccount,
     /// Service name in the SCM. Also what --uninstall/--start address.
     pub name: &'a str,
     /// What services.msc shows in its Description column.
@@ -58,4 +100,31 @@ pub struct InstallSpec<'a> {
     /// Fallback when no explicit settings path was given: `settings.yaml`
     /// next to the exe, when it exists at install time.
     pub settings_near_exe: Option<std::path::PathBuf>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_account_of_a_service() {
+        assert_eq!(
+            ServiceAccount::parse("virtual"),
+            Some(ServiceAccount::Virtual)
+        );
+        assert_eq!(ServiceAccount::parse("root"), None);
+        assert_eq!(ServiceAccount::default(), ServiceAccount::LocalSystem);
+
+        assert_eq!(ServiceAccount::LocalSystem.account_name("proxy"), None);
+        assert_eq!(
+            ServiceAccount::Virtual.account_name("proxy").as_deref(),
+            Some(r"NT SERVICE\proxy")
+        );
+        assert_eq!(
+            ServiceAccount::LocalService
+                .account_name("proxy")
+                .as_deref(),
+            Some(r"NT AUTHORITY\LocalService")
+        );
+    }
 }
